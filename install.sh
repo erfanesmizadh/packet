@@ -38,6 +38,9 @@ readonly BIN_DIR="/usr/local/bin"
 readonly BACKUP_DIR="/root/avash-backups"
 readonly LOG_DIR="/var/log/avash-tunnel"
 readonly PAQET_REPO="hanselime/paqet"
+readonly PAQET_CUSTOM_AMD64="https://github.com/erfanesmizadh/packet/releases/download/paget/paqet-linux-amd64-v2.2.0-optimize.tar.gz"
+readonly PAQET_CUSTOM_ARM64="https://github.com/erfanesmizadh/packet/releases/download/paget/paqet_linux_arm64-v2.2.0-optimize.tar.gz"
+readonly PAQET_CUSTOM_VERSION="v2.2.0-optimize"
 
 # ─── Telegram / Bot ───────────────────────────────────────────────────────
 readonly TELEGRAM_CHANNEL="@AVASH_NET"
@@ -430,39 +433,216 @@ get_latest_paqet_version() {
     echo "${ver:-v1.0.0-alpha.16}"
 }
 
-install_paqet_binary() {
-    local arch
-    arch=$(detect_arch) || return 1
-    local arch_name="$arch"
-    [ "$arch" = "amd64" ] && arch_name="amd64"
-
-    local latest
-    latest=$(get_latest_paqet_version)
-    local fname="paqet-linux-${arch_name}-${latest}.tar.gz"
-    local url="https://github.com/${PAQET_REPO}/releases/download/${latest}/${fname}"
-
-    print_step "Downloading Paqet $latest..."
-    if ! curl -fsSL "$url" -o /tmp/paqet.tar.gz 2>/dev/null; then
-        print_error "Download failed: $url"
-        return 1
-    fi
-
+# ─── Extract and install paqet from tar.gz ────────────────────────────────
+_extract_and_install_paqet() {
+    local tarfile="$1"
     mkdir -p /opt/paqet
-    tar -xzf /tmp/paqet.tar.gz -C /opt/paqet 2>/dev/null
-    rm -f /tmp/paqet.tar.gz
+    rm -rf /opt/paqet/*
+    tar -xzf "$tarfile" -C /opt/paqet 2>/dev/null
+    rm -f "$tarfile"
 
     local bin
-    bin=$(find /opt/paqet -type f -name "*paqet*" | head -1)
+    bin=$(find /opt/paqet -type f \( -name "paqet*" -o -name "*paqet*" \) | grep -v ".tar" | head -1)
     [ -z "$bin" ] && bin=$(find /opt/paqet -type f -executable | head -1)
 
     if [ -n "$bin" ]; then
         cp "$bin" "$BIN_DIR/paqet"
         chmod +x "$BIN_DIR/paqet"
-        print_success "Paqet installed: $BIN_DIR/paqet"
+        print_success "Paqet binary installed: $BIN_DIR/paqet"
+        local ver
+        ver=$("$BIN_DIR/paqet" version 2>/dev/null | head -1 || echo "unknown")
+        print_info "Version: $ver"
+        return 0
     else
         print_error "Could not find Paqet binary in archive"
+        ls -la /opt/paqet/ 2>/dev/null
         return 1
     fi
+}
+
+# ─── Install Paqet Binary (menu) ──────────────────────────────────────────
+install_paqet_binary() {
+    local silent="${1:-}"   # اگر "silent" بود بدون منو نصب کن (از KCP setup)
+
+    local arch
+    arch=$(detect_arch) || return 1
+
+    # نصب خودکار (از داخل configure_kcp)
+    if [ "$silent" = "silent" ]; then
+        print_step "Auto-installing Paqet (AVASH optimized build)..."
+        local url
+        [ "$arch" = "arm64" ] && url="$PAQET_CUSTOM_ARM64" || url="$PAQET_CUSTOM_AMD64"
+        if curl -fsSL --progress-bar "$url" -o /tmp/paqet.tar.gz 2>/dev/null; then
+            _extract_and_install_paqet /tmp/paqet.tar.gz && return 0
+        fi
+        print_warning "Custom build failed, trying original repo..."
+        local latest
+        latest=$(get_latest_paqet_version)
+        local fname="paqet-linux-${arch}-${latest}.tar.gz"
+        local fallback_url="https://github.com/${PAQET_REPO}/releases/download/${latest}/${fname}"
+        curl -fsSL --progress-bar "$fallback_url" -o /tmp/paqet.tar.gz 2>/dev/null
+        _extract_and_install_paqet /tmp/paqet.tar.gz
+        return $?
+    fi
+
+    # منوی کامل نصب پاگت
+    install_paqet_menu
+}
+
+# ─── Paqet Install Menu ───────────────────────────────────────────────────
+install_paqet_menu() {
+    while true; do
+        clear; show_banner
+        echo -e "${GREEN}╔══════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║  نصب هسته Paqet                                                   ║${NC}"
+        echo -e "${GREEN}╚══════════════════════════════════════════════════════════════════╝${NC}\n"
+
+        local arch
+        arch=$(detect_arch 2>/dev/null || echo "unknown")
+
+        # وضعیت فعلی
+        echo -e "${CYAN}وضعیت فعلی:${NC}"
+        if [ -f "$BIN_DIR/paqet" ]; then
+            local cur_ver
+            cur_ver=$("$BIN_DIR/paqet" version 2>/dev/null | head -1 || echo "نامشخص")
+            echo -e "  ${GREEN}✅ Paqet نصب شده${NC}"
+            echo -e "  ${CYAN}   نسخه : $cur_ver${NC}"
+        else
+            echo -e "  ${YELLOW}⚠️  Paqet نصب نشده${NC}"
+        fi
+        echo -e "  ${CYAN}   معماری سیستم : $arch${NC}"
+        echo ""
+
+        echo -e "${YELLOW}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${GREEN}  نسخه بهینه‌سازی شده AVASH  (پیشنهادی)${NC}"
+        echo -e "${YELLOW}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "  ${WHITE}[1]${NC} ⚡ نصب نسخه AMD64  (${PAQET_CUSTOM_VERSION})"
+        echo -e "        ${DIM}${PAQET_CUSTOM_AMD64}${NC}"
+        echo ""
+        echo -e "  ${WHITE}[2]${NC} ⚡ نصب نسخه ARM64  (${PAQET_CUSTOM_VERSION})"
+        echo -e "        ${DIM}${PAQET_CUSTOM_ARM64}${NC}"
+        echo ""
+        echo -e "${YELLOW}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${CYAN}  نصب خودکار (تشخیص معماری)${NC}"
+        echo -e "${YELLOW}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "  ${WHITE}[3]${NC} 🤖 نصب خودکار (معماری: ${arch})"
+        echo -e "        ${DIM}نسخه AVASH بهینه را بر اساس معماری شما دانلود می‌کند${NC}"
+        echo ""
+        echo -e "${YELLOW}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${CYAN}  سایر گزینه‌ها${NC}"
+        echo -e "${YELLOW}══════════════════════════════════════════════════════════════${NC}"
+        echo -e "  ${WHITE}[4]${NC} 🌐 دانلود از ریپوی اصلی GitHub (${PAQET_REPO})"
+        echo -e "  ${WHITE}[5]${NC} 📁 نصب از فایل لوکال (tar.gz از /root/)"
+        echo -e "  ${WHITE}[6]${NC} 🔗 دانلود از URL دلخواه"
+        echo -e "  ${WHITE}[7]${NC} 🗑️  حذف Paqet"
+        echo -e "  ${WHITE}[0]${NC} ↩️  بازگشت"
+        echo ""
+
+        read -r -p "انتخاب کن [0-7]: " choice
+
+        case "$choice" in
+            1)
+                print_step "دانلود نسخه AMD64 بهینه AVASH..."
+                if curl -fsSL --progress-bar "$PAQET_CUSTOM_AMD64" -o /tmp/paqet.tar.gz; then
+                    _extract_and_install_paqet /tmp/paqet.tar.gz && print_success "نصب موفق!" || print_error "نصب ناموفق"
+                else
+                    print_error "دانلود ناموفق. اینترنت سرور رو چک کن."
+                fi
+                pause
+                ;;
+            2)
+                print_step "دانلود نسخه ARM64 بهینه AVASH..."
+                if curl -fsSL --progress-bar "$PAQET_CUSTOM_ARM64" -o /tmp/paqet.tar.gz; then
+                    _extract_and_install_paqet /tmp/paqet.tar.gz && print_success "نصب موفق!" || print_error "نصب ناموفق"
+                else
+                    print_error "دانلود ناموفق. اینترنت سرور رو چک کن."
+                fi
+                pause
+                ;;
+            3)
+                print_step "تشخیص معماری: $arch"
+                local auto_url
+                if [ "$arch" = "arm64" ]; then
+                    auto_url="$PAQET_CUSTOM_ARM64"
+                    print_info "دانلود نسخه ARM64..."
+                else
+                    auto_url="$PAQET_CUSTOM_AMD64"
+                    print_info "دانلود نسخه AMD64..."
+                fi
+                if curl -fsSL --progress-bar "$auto_url" -o /tmp/paqet.tar.gz; then
+                    _extract_and_install_paqet /tmp/paqet.tar.gz && print_success "نصب خودکار موفق!" || print_error "نصب ناموفق"
+                else
+                    print_error "دانلود ناموفق."
+                fi
+                pause
+                ;;
+            4)
+                print_step "دریافت آخرین نسخه از GitHub..."
+                local latest
+                latest=$(get_latest_paqet_version)
+                local fname="paqet-linux-${arch}-${latest}.tar.gz"
+                local url="https://github.com/${PAQET_REPO}/releases/download/${latest}/${fname}"
+                print_info "نسخه: $latest"
+                print_info "URL: $url"
+                if curl -fsSL --progress-bar "$url" -o /tmp/paqet.tar.gz; then
+                    _extract_and_install_paqet /tmp/paqet.tar.gz && print_success "نصب موفق!" || print_error "نصب ناموفق"
+                else
+                    print_error "دانلود ناموفق. نسخه $latest برای $arch وجود نداره."
+                fi
+                pause
+                ;;
+            5)
+                echo ""
+                print_info "فایل‌های tar.gz موجود در /root/:"
+                local files=()
+                mapfile -t files < <(find /root/ -maxdepth 2 -name "*.tar.gz" 2>/dev/null | sort)
+                if [ ${#files[@]} -eq 0 ]; then
+                    print_warning "هیچ فایلی پیدا نشد"
+                    pause; continue
+                fi
+                local i=1
+                for f in "${files[@]}"; do
+                    local sz
+                    sz=$(du -h "$f" 2>/dev/null | cut -f1)
+                    echo -e "  ${WHITE}[$i]${NC} $f  (${sz})"
+                    ((i++))
+                done
+                echo ""
+                read -r -p "شماره فایل رو انتخاب کن: " fnum
+                if [[ "$fnum" =~ ^[0-9]+$ ]] && [ "$fnum" -ge 1 ] && [ "$fnum" -le ${#files[@]} ]; then
+                    local sel="${files[$((fnum-1))]}"
+                    cp "$sel" /tmp/paqet.tar.gz
+                    _extract_and_install_paqet /tmp/paqet.tar.gz && print_success "نصب موفق!" || print_error "نصب ناموفق"
+                else
+                    print_error "انتخاب نامعتبر"
+                fi
+                pause
+                ;;
+            6)
+                echo ""
+                read -r -p "$(echo -e "${YELLOW}URL را وارد کن: ${NC}")" custom_url
+                [ -z "$custom_url" ] && { print_error "URL خالیه"; pause; continue; }
+                print_step "دانلود از $custom_url..."
+                if curl -fsSL --progress-bar "$custom_url" -o /tmp/paqet.tar.gz; then
+                    _extract_and_install_paqet /tmp/paqet.tar.gz && print_success "نصب موفق!" || print_error "نصب ناموفق"
+                else
+                    print_error "دانلود ناموفق"
+                fi
+                pause
+                ;;
+            7)
+                read -r -p "$(echo -e "${RED}Paqet حذف شود؟ (y/N): ${NC}")" confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    rm -f "$BIN_DIR/paqet"
+                    rm -rf /opt/paqet
+                    print_success "Paqet حذف شد"
+                fi
+                pause
+                ;;
+            0) return ;;
+            *) print_error "انتخاب نامعتبر"; sleep 1 ;;
+        esac
+    done
 }
 
 get_manual_kcp_settings() {
@@ -576,7 +756,7 @@ configure_kcp_server() {
     # Install paqet if needed
     if [ ! -f "$BIN_DIR/paqet" ]; then
         print_warning "Paqet binary not found. Installing..."
-        install_paqet_binary || { print_error "Cannot install Paqet"; pause; return; }
+        install_paqet_binary "silent" || { print_error "Cannot install Paqet"; pause; return; }
     fi
 
     configure_iptables_kcp "$port"
@@ -718,7 +898,7 @@ configure_kcp_client() {
 
     if [ ! -f "$BIN_DIR/paqet" ]; then
         print_warning "Installing Paqet binary..."
-        install_paqet_binary || { print_error "Cannot install Paqet"; pause; return; }
+        install_paqet_binary "silent" || { print_error "Cannot install Paqet"; pause; return; }
     fi
 
     mkdir -p "$CONFIG_DIR/kcp"
@@ -2089,10 +2269,11 @@ main_menu() {
         echo -e "  ${WHITE}[5]${NC} 🚀 Optimize Server"
         echo -e "  ${WHITE}[6]${NC} 🤖 Telegram Bot"
         echo -e "  ${WHITE}[7]${NC} 🗑️  Uninstall All"
-        echo -e "  ${WHITE}[8]${NC} 🚪 Exit"
+        echo -e "  ${WHITE}[8]${NC} 📦 نصب / آپدیت هسته Paqet"
+        echo -e "  ${WHITE}[9]${NC} 🚪 Exit"
         echo ""
 
-        read -r -p "Select option [0-8]: " choice
+        read -r -p "Select option [0-9]: " choice
 
         case "$choice" in
             0) install_dependencies; install_manager ;;
@@ -2103,7 +2284,8 @@ main_menu() {
             5) optimize_server ;;
             6) telegram_bot_menu ;;
             7) uninstall_all ;;
-            8)
+            8) install_paqet_menu ;;
+            9)
                 echo -e "\n${GREEN}══════════════════════════════════════════════════════════════════${NC}"
                 echo -e "${GREEN}  Goodbye! — Telegram: ${TELEGRAM_CHANNEL}  ${NC}"
                 echo -e "${GREEN}══════════════════════════════════════════════════════════════════${NC}\n"
